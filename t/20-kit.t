@@ -174,19 +174,6 @@ subtest 'dev kits' => sub {
 	           "simple kits ignore features they don't know about");
 };
 
-subtest 'legacy kit support' => sub {
-	my $kit = legacy_kit('legacy', '1.9.8', 't/src/legacy');
-
-	cmp_deeply([$kit->source_yaml_files(mockenv->new())],
-	           [re('\bbase/params.yml')],
-	           "legacy kits without subkits should return base yaml files only");
-
-	cmp_deeply([$kit->source_yaml_files(mockenv->new('do-thing'))],
-	           [re('\bbase/params.yml'),
-	            re('\bdo-thing/params.yml')],
-	           "legacy kits with subkits should return all relevant yaml files");
-};
-
 subtest 'genesis-community kit provider configuration' => sub {
 	my (%info);
 

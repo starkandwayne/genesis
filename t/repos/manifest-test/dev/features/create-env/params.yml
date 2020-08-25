@@ -1,5 +1,5 @@
 resource_pools:
-- name: small
+- name: huge
 networks:
 - name: mynet
 azs:

@@ -8,54 +8,83 @@ use helper;
 use Test::Output;
 
 use_ok "Genesis::BOSH";
+use_ok "Genesis::BOSH::Director";
+use_ok "Genesis::BOSH::CreateEnvProxy";
 use Genesis;
 
-subtest '_bosh helper magic' => sub {
+sub get_bosh_director {
+	my $alias = shift || 'bosh-director';
+	Genesis::BOSH->set_command($ENV{GENESIS_BOSH_COMMAND});
+	Genesis::BOSH::Director->new($alias,url => 'https://127.0.0.1', ca_cert=>"ca_cert", client=>'admin', secret=>'password', @_);
+}
+sub get_bosh_create_env {
+	my $alias = shift;
+	Genesis::BOSH->set_command($ENV{GENESIS_BOSH_COMMAND});
+	Genesis::BOSH::CreateEnvProxy->new(@_);
+}
+subtest 'BOSH Director object' => sub {
 	local $ENV{GENESIS_BOSH_COMMAND};
 	bosh_runs_as('foo');
+	my $bosh = get_bosh_director('local');
 
-	ok Genesis::BOSH->_bosh({ passfail => 1 }, 'bosh', 'foo'),
+	ok $bosh->execute({ passfail => 1 }, 'bosh', 'foo'),
 		"(bosh foo), pre-tokenized, should execute properly";
-	ok Genesis::BOSH->_bosh({ passfail => 1 }, 'foo'),
+	ok $bosh->execute({ passfail => 1 }, 'foo'),
 		"(foo), pre-tokenized, should execute properly";
-	ok Genesis::BOSH->_bosh({ passfail => 1 }, 'bosh foo'),
+	ok $bosh->execute({ passfail => 1 }, 'bosh foo'),
 		"simple 'bosh foo' should execute properly";
-	ok Genesis::BOSH->_bosh({ passfail => 1 }, 'bosh foo | cat $1', '/dev/null'),
+	ok $bosh->execute({ passfail => 1 }, 'bosh foo | cat $1', '/dev/null'),
 		"complex 'bosh foo | ...' (with vars) should execute properly";
-	ok Genesis::BOSH->_bosh({ passfail => 1 }, 'foo | cat $1', '/dev/null'),
+	ok $bosh->execute({ passfail => 1 }, 'foo | cat $1', '/dev/null'),
 		"complex 'foo | ...' (with vars) should execute properly";
 };
 
-subtest 'bosh ping' => sub {
+subtest 'bosh connect_and_validate' => sub {
 	local $ENV{GENESIS_BOSH_COMMAND};
 	my $director = fake_bosh_director('the-target');
-	bosh_runs_as("-e the-target env");
-	ok Genesis::BOSH->ping('the-target'), "bosh env on alias should ping ok";
+	bosh_runs_as('env',<<EOF,BOSH_ENVIRONMENT => "https://127.0.0.1:25555", BOSH_CA_CERT => 'ca_cert', BOSH_CLIENT => 'admin', BOSH_CLIENT_SECRET => 'password', BOSH_DEPLOYMENT => '');
+Using environment 'https://127.0.0.1:25555' as user 'admin'
 
-	bosh_runs_as("-e https://127.0.0.1:25555 env");
-	ok Genesis::BOSH->ping('https://127.0.0.1:25555'), "bosh env on url should ping ok";
-	$director->stop();
+Name               the-target-bosh
+UUID               c406e16b-600e-4ceb-a736-69dd50512a80
+Version            271.2.0 (00000000)
+Director Stemcell  ubuntu-xenial/621.74
+CPI                vsphere_cpi
+Features           compiled_package_cache: disabled
+                   config_server: enabled
+                   local_dns: enabled
+                   power_dns: disabled
+                   snapshots: disabled
+User               admin
+
+Succeeded
+EOF
+	my $bosh = get_bosh_director('the-target');
+	ok $bosh->connect_and_validate(), "bosh env on alias should ping ok";
 };
 
 subtest 'bosh create-env' => sub {
 	local $ENV{GENESIS_BOSH_COMMAND};
 	bosh_runs_as("create-env --state state.json manifest.yml");
-	ok Genesis::BOSH->create_env("manifest.yml", state => "state.json"),
+	my $bosh = get_bosh_create_env();
+	ok $bosh->create_env("manifest.yml", state => "state.json"),
 		"create_env with state file should work";
 
-	throws_ok { Genesis::BOSH->create_env() }
+	throws_ok { $bosh->create_env() }
 		qr/missing deployment manifest/i;
 
-	throws_ok { Genesis::BOSH->create_env("manifest.yml") }
+	throws_ok { $bosh->create_env("manifest.yml") }
 		qr/missing 'state' option/i;
 
 	bosh_runs_as("create-env --state state.json -l path/to/vars-file.yml manifest.yml");
-	ok Genesis::BOSH->create_env("manifest.yml", state => "state.json", vars_file => "path/to/vars-file.yml"),
+	Genesis::BOSH->set_command($ENV{GENESIS_BOSH_COMMAND});
+	ok $bosh->create_env("manifest.yml", state => "state.json", vars_file => "path/to/vars-file.yml"),
 		"create_env with state file and vars-file should work";
 
 	local $ENV{BOSH_NON_INTERACTIVE} = 'yes';
 	bosh_runs_as("-n create-env --state state.json manifest.yml");
-	ok Genesis::BOSH->create_env("manifest.yml", state => "state.json"),
+	Genesis::BOSH->set_command($ENV{GENESIS_BOSH_COMMAND});
+	ok $bosh->create_env("manifest.yml", state => "state.json"),
 		"create_env honors BOSH_NON_INTERACTIVE";
 };
 
@@ -63,60 +92,58 @@ subtest 'bosh cloud-config' => sub {
 	my $out = workdir;
 
 	local $ENV{GENESIS_BOSH_COMMAND};
-	bosh_outputs_json('-e "some-env" config --type cloud --name default --json',"() # cloud-config");
-	ok Genesis::BOSH->download_cloud_config('some-env', "$out/cloud.yml"),
+	bosh_outputs_json('config --type cloud --name default --json',"() # cloud-config");
+	ok get_bosh_director('some-env')->download_config("$out/cloud.yml", 'cloud'),
 		"download_cloud_config should work";
 
-	bosh_outputs_json('-e "some-env" config --type cloud --name default --json',"");
-	throws_ok { Genesis::BOSH->download_cloud_config('some-env', "$out/cloud.yml") }
-		qr/no cloud-config defined/i,
+	bosh_outputs_json('config --type cloud --name default --json',"");
+	throws_ok { get_bosh_director('some-env')->download_config("$out/cloud.yml", 'cloud') }
+		qr/no cloud config content/i,
 		"without cloud-config output, download_cloud_config should fail";
 };
 
 subtest 'bosh deploy' => sub {
 	local $ENV{GENESIS_BOSH_COMMAND};
-	bosh_runs_as("-e my-env -d my-dep deploy --some --flags manifest.yml");
-	lives_ok { Genesis::BOSH->deploy("my-env", manifest   => 'manifest.yml',
-	                                           deployment => 'my-dep',
-	                                           flags      => ['--some', '--flags']); }
-		"deploy should pass through options and flags properly";
+	bosh_runs_as("deploy --some --flags manifest.yml",undef, BOSH_ALIAS=>'my-env', BOSH_ENVIRONMENT=>'http://10.0.0.1:25678', BOSH_DEPLOYMENT=>'my-dep');
+	lives_ok { get_bosh_director('my-env',deployment => 'my-dep',url => 'http://10.0.0.1:25678')->deploy(
+		'manifest.yml',
+		flags      => ['--some', '--flags']);
+	} "deploy should pass through options and flags properly";
 
-	bosh_runs_as("-e my-env -d my-dep deploy --some --flags -l path/to/vars-file.yml manifest.yml");
-	lives_ok { Genesis::BOSH->deploy("my-env", manifest   => 'manifest.yml',
-	                                           deployment => 'my-dep',
-	                                           vars_file  => "path/to/vars-file.yml",
-	                                           flags      => ['--some', '--flags']); }
-		"deploy should pass through vars-file, options and flags properly";
+	bosh_runs_as("--some --flags -l path/to/vars-file.yml manifest.yml", undef, BOSH_ENVIRONMENT=>'https://127.0.0.1:25555', BOSH_DEPLOYMENT=>'my-dep');
+	lives_ok { get_bosh_director('some-env',deployment => 'my-dep')->deploy(
+		'manifest.yml',
+		vars_file  => "path/to/vars-file.yml",
+		flags      => ['--some', '--flags']);
+	} "deploy should pass through vars-file, options and flags properly";
 
-	throws_ok { Genesis::BOSH->deploy } qr/missing bosh environment name/i;
-	throws_ok { Genesis::BOSH->deploy("an-env") }
-		qr/missing 'manifest' option/i;
-	throws_ok { Genesis::BOSH->deploy("an-env", manifest => 'manifest.yml') }
-		qr/missing 'deployment' option/i;
-};
-
-subtest 'bosh alias' => sub {
-	local $ENV{GENESIS_BOSH_COMMAND};
-	bosh_runs_as("alias-env the-alias");
-	lives_ok { Genesis::BOSH->alias("the-alias") } "alias works";
+	bosh_runs_as("--some --flags -l path/to/vars-file.yml manifest.yml", undef, BOSH_ALIAS=>'an-env',BOSH_ENVIRONMENT=>'https://127.0.0.1:25555', BOSH_DEPLOYMENT=>'some-dep');
+	throws_ok { get_bosh_director('an-env',deployment => 'some-dep')->deploy() }
+		qr/Missing manifest/i;
+	throws_ok { get_bosh_director('an-env')->deploy('manifest.yml') }
+		qr/No deployment name/i;
 };
 
 subtest 'bosh run_errand' => sub {
 	local $ENV{GENESIS_BOSH_COMMAND};
-	bosh_runs_as("-n -e an-env -d some-deployment run-errand smoke-tests");
-	lives_ok { Genesis::BOSH->run_errand("an-env", deployment => "some-deployment",
-	                                               errand     => "smoke-tests") }
-		"run_errand works with env, deploytment, and errand name set";
+	bosh_runs_as("-n run-errand smoke-tests", undef, BOSH_ALIAS=>'an-env',BOSH_ENVIRONMENT=>'https://127.0.0.1:25555', BOSH_DEPLOYMENT=>'some-deployment');
+	lives_ok {
+		get_bosh_director('an-env',deployment=>'some-deployment')->run_errand('smoke-tests');
+	} "run_errand works with env, deploytment, and errand name set";
 
-	throws_ok { Genesis::BOSH->run_errand } qr/missing bosh environment name/i;
-	throws_ok { Genesis::BOSH->run_errand("an-env") }
-		qr/missing 'deployment' option/i;
-	throws_ok { Genesis::BOSH->run_errand("an-env", deployment => 'my-dep') }
-		qr/missing 'errand' option/i;
+	throws_ok {
+		get_bosh_director('an-env')->run_errand("an-env") 
+	} qr/No deployment name/i;
+	throws_ok {
+		get_bosh_director('an-env',deployment=>'some-deployment')->run_errand()
+	} qr/Missing errand name/i;
 };
 
 subtest 'environment variable management' => sub {
 	local %ENV;
+	for (qw/ENVIRONMENT CA_CERT CLIENT CLIENT_SECRET DEPLOYMENT ALIAS/) {
+		$ENV{"BOSH_$_"} = "calling_environment_$_";
+	}
 
 	fake_bosh(<<'EOF');
 echo HTTPS_PROXY=$HTTPS_PROXY...
@@ -125,6 +152,8 @@ echo BOSH_ENVIRONMENT=$BOSH_ENVIRONMENT...
 echo BOSH_CA_CERT=$BOSH_CA_CERT...
 echo BOSH_CLIENT=$BOSH_CLIENT...
 echo BOSH_CLIENT_SECRET=$BOSH_CLIENT_SECRET...
+echo BOSH_DEPLOYMENT=$BOSH_DEPLOYMENT...
+echo BOSH_ALIAS=$BOSH_ALIAS...
 EOF
 
 	$ENV{$_} = "a {$_} got missed" for (qw(
@@ -132,17 +161,23 @@ EOF
 		BOSH_ENVIRONMENT   BOSH_CA_CERT
 		BOSH_CLIENT        BOSH_CLIENT_SECRET));
 
-	stdout_is(sub { Genesis::BOSH::_bosh({ interactive => 1 }, 'bosh', 'foo'); }, <<EOF,
+	my $bosh=get_bosh_director('my-bosh');
+	stdout_is(sub { $bosh->execute(
+		{ interactive => 1 }, 'bosh', 'foo'
+	); }, <<EOF,
 HTTPS_PROXY=...
 https_proxy=...
-BOSH_ENVIRONMENT=...
-BOSH_CA_CERT=...
-BOSH_CLIENT=...
-BOSH_CLIENT_SECRET=...
+BOSH_ENVIRONMENT=https://127.0.0.1:25555...
+BOSH_CA_CERT=ca_cert...
+BOSH_CLIENT=admin...
+BOSH_CLIENT_SECRET=password...
+BOSH_DEPLOYMENT=...
+BOSH_ALIAS=my-bosh...
 EOF
 		"bosh() helper should clear out the environment implicitly");
 
-	stdout_is(sub { Genesis::BOSH::_bosh({
+	$bosh->deployment('the-best-deployment');
+	stdout_is(sub {$bosh->execute({
 			interactive => 1,
 			env => {
 				BOSH_CA_CERT       => 'save my ca cert',
@@ -152,10 +187,12 @@ EOF
 		}, 'bosh foo'); }, <<EOF,
 HTTPS_PROXY=...
 https_proxy=...
-BOSH_ENVIRONMENT=...
+BOSH_ENVIRONMENT=https://127.0.0.1:25555...
 BOSH_CA_CERT=save my ca cert...
 BOSH_CLIENT=save my client id...
 BOSH_CLIENT_SECRET=save my client secret...
+BOSH_DEPLOYMENT=the-best-deployment...
+BOSH_ALIAS=my-bosh...
 EOF
 		"bosh() helper should clear out the environment implicitly");
 };

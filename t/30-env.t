@@ -12,6 +12,7 @@ use Test::Output;
 use Test::Differences;
 
 use_ok 'Genesis::Env';
+use Genesis::BOSH;
 use Genesis::Top;
 use Genesis;
 
@@ -26,24 +27,24 @@ subtest 'new() validation' => sub {
 };
 
 subtest 'name validation' => sub {
-	lives_ok { Genesis::Env->validate_name("my-new-env"); }
+	lives_ok { Genesis::Env->_validate_env_name("my-new-env"); }
 		"my-new-env is a good enough name";
 
-	throws_ok { Genesis::Env->validate_name(""); }
+	throws_ok { Genesis::Env->_validate_env_name(""); }
 		qr/must not be empty/i;
 
-	throws_ok { Genesis::Env->validate_name("my\tnew env\n"); }
+	throws_ok { Genesis::Env->_validate_env_name("my\tnew env\n"); }
 		qr/must not contain whitespace/i;
 
-	throws_ok { Genesis::Env->validate_name("my-new-!@#%ing-env"); }
+	throws_ok { Genesis::Env->_validate_env_name("my-new-!@#%ing-env"); }
 		qr/can only contain lowercase letters, numbers, and hyphens/i;
 
-	throws_ok { Genesis::Env->validate_name("-my-new-env"); }
+	throws_ok { Genesis::Env->_validate_env_name("-my-new-env"); }
 		qr/must start with a .*letter/i;
-	throws_ok { Genesis::Env->validate_name("my-new-env-"); }
+	throws_ok { Genesis::Env->_validate_env_name("my-new-env-"); }
 		qr/must not end with a hyphen/i;
 
-	throws_ok { Genesis::Env->validate_name("my--new--env"); }
+	throws_ok { Genesis::Env->_validate_env_name("my--new--env"); }
 		qr/must not contain sequential hyphens/i;
 
 	for my $ok (qw(
@@ -52,7 +53,7 @@ subtest 'name validation' => sub {
 		this-is-a-really-long-hyphenated-name-oh-god-why-would-you-do-this-to-yourself
 		company-us_east_1-prod
 	)) {
-		lives_ok { Genesis::Env->validate_name($ok); } "$ok is a valid env name";
+		lives_ok { Genesis::Env->_validate_env_name($ok); } "$ok is a valid env name";
 	}
 };
 
@@ -68,8 +69,7 @@ kit:
   version: latest
   features: []
 
-genesis:
-  env: standalone
+genesis: {}
 EOF
 
 	lives_ok { $top->load_env('standalone') }
@@ -169,8 +169,7 @@ kit:
     - vsphere
     - proto
 
-genesis:
-  env:       standalone
+genesis: {}
 
 params:
   state:   awesome
@@ -181,7 +180,7 @@ EOF
 	my $env = $top->load_env('standalone');
 	is($env->name, "standalone", "an environment should know its name");
 	is($env->file, "standalone.yml", "an environment should know its file path");
-	is($env->deployment, "standalone-thing", "an environment should know its deployment name");
+	is($env->deployment_name, "standalone-thing", "an environment should know its deployment name");
 	is($env->kit->id, "bosh/0.2.0", "an environment can ask the kit for its kit name/version");
 	is($env->secrets_mount, '/secret/', "default secret mount used when none provided");
 	is($env->secrets_slug, 'standalone/thing', "default secret slug generated correctly");
@@ -199,13 +198,12 @@ kit:
     - extras
 
 genesis:
-  env:       standalone-with-another
   secrets_mount: genesis/secrets
   exodus_mount:  genesis/exodus
 EOF
 	local $ENV{NOCOLOR} = 'y';
 	throws_ok { $env = $top->load_env('standalone-with-another.yml');} 
-		qr/\[ERROR\] Kit bosh\/0.2.0 is not compatible with secrets_mount feature\n\s+Please upgrade to a newer release or remove params.secrets_mount from standalone-with-another.yml/,
+		qr/\[ERROR\] Environment standalone-with-another.yml could not be loaded:\n\s+- Kit bosh\/0.2.0 is not compatible with secrets_mount feature\n\s+Please upgrade to a newer release or remove genesis.secrets_mount from standalone-with-another.yml\n\s+- Kit bosh\/0.2.0 is not compatible with exodus_mount feature\n\s+Please upgrade to a newer release or remove genesis.exodus_mount from standalone-with-another.yml/ms,
 		"Outdated kits bail when using v2.7.0 features";
 
 =comment
@@ -218,14 +216,13 @@ kit:
     - extras
 
 genesis:
-  env:       standalone-with-another
   secrets_mount: genesis/secrets
   exodus_mount:  genesis/exodus
 EOF
 	$env = $top->load_env('standalone-with-another.yml');
 	is($env->name, "standalone-with-another", "an environment should know its name");
 	is($env->file, "standalone-with-another.yml", "an environment should know its file path");
-	is($env->deployment, "standalone-with-another-thing", "an environment should know its deployment name");
+	is($env->deployment_name, "standalone-with-another-thing", "an environment should know its deployment name");
 	is($env->kit->id, "bosh/0.2.0", "an environment can inherit its kit name/version");
 	is($env->secrets_mount, '/genesis/secrets/', "specified secret mount used when  provided");
 	is($env->secrets_slug, 'standalone/with/another/thing', "default secret slug generated correctly");
@@ -252,10 +249,9 @@ kit:
   version: 0.2.0
   features:
     - vsphere
-    - proto
+    - second-feature
 
-genesis:
-  env:       standalone
+genesis: {}
 
 params:
   state:   awesome
@@ -280,13 +276,13 @@ EOF
 	is($env->lookup('params.false', 'MISSING'), undef,
 		"params lookup should return falsey values if they are set");
 
-	cmp_deeply([$env->features], [qw[vsphere proto]],
+	cmp_deeply([$env->features], [qw[vsphere second-feature]],
 		"features() returns the current features");
 	ok($env->has_feature('vsphere'), "standalone env has the vsphere feature");
-	ok($env->has_feature('proto'), "standalone env has the proto feature");
+	ok($env->has_feature('second-feature'), "standalone env has the second-feature feature");
 	ok(!$env->has_feature('xyzzy'), "standalone env doesn't have the xyzzy feature");
-	ok($env->needs_bosh_create_env(),
-		"environments with the 'proto' feature enabled require bosh create-env");
+	ok($env->use_create_env(),
+		"bosh environments without specifying bosh_env require bosh create-env");
 
 	put_file $top->path("regular-deploy.yml"), <<EOF;
 ---
@@ -297,14 +293,13 @@ kit:
     - vsphere
 
 genesis:
-  env:       regular-deploy
+  bosh_env: parent-bosh
 EOF
 	lives_ok { $env = $top->load_env('regular-deploy') }
 	         "Genesis::Env should be able to load the `regular-deploy' environment.";
 	ok($env->has_feature('vsphere'), "regular-deploy env has the vsphere feature");
-	ok(!$env->has_feature('proto'), "regular-deploy env does not have the proto feature");
-	ok(!$env->needs_bosh_create_env(),
-		"environments without the 'proto' feature enabled do not require bosh create-env");
+	ok(!$env->use_create_env(),
+		"bosh environments with genesis.bosh_env set do not require bosh create-env");
 
 	teardown_vault();
 };
@@ -312,6 +307,7 @@ EOF
 subtest 'manifest generation' => sub {
 	my $vault_target = vault_ok;
 	Genesis::Vault->clear_all();
+	write_bosh_config 'standalone';
 	my $top = Genesis::Top->create(workdir, 'thing', vault=>$VAULT_URL);
 	$top->link_dev_kit('t/src/fancy');
 	put_file $top->path('standalone.yml'), <<EOF;
@@ -324,8 +320,7 @@ kit:
     - tango
     - foxtrot
 
-genesis:
-  env:       standalone
+genesis: {}
 EOF
 
 	my $env = $top->load_env('standalone');
@@ -349,7 +344,7 @@ EOF
 --- {}
 # not really a cloud config, but close enough
 EOF
-	lives_ok { $env->use_cloud_config($top->path(".cloud.yml"))->manifest; }
+	lives_ok { $env->use_config($top->path(".cloud.yml"))->manifest; }
 		"should be able to merge an env with a cloud-config";
 
 	my $mfile = $top->path(".manifest.yml");
@@ -401,10 +396,9 @@ kit:
   version: latest
   features:
     - papa    # for pruning tests
-genesis:
-  env: standalone
+genesis: {}
 EOF
-	my $env = $top->load_env('standalone')->use_cloud_config($top->path('.cloud.yml'));
+	my $env = $top->load_env('standalone')->use_config($top->path('.cloud.yml'));
 
 	cmp_deeply(scalar load_yaml($env->manifest(prune => 0)), {
 		name   => ignore,
@@ -452,11 +446,11 @@ EOF
 	teardown_vault();
 };
 
-subtest 'manifest pruning (bosh create-env)' => sub {
+subtest 'manifest pruning (custom bosh create-env)' => sub {
 	my $vault_target = vault_ok;
 	Genesis::Vault->clear_all();
 	my $top = Genesis::Top->create(workdir, 'thing', vault=>$VAULT_URL);
-	$top->link_dev_kit('t/src/fancy');
+	$top->link_dev_kit('t/src/custom-bosh');
 	put_file $top->path(".cloud.yml"), <<EOF;
 ---
 ignore: cloud-config
@@ -470,13 +464,10 @@ kit:
   version: latest
   features:
     - papa     # for pruning tests
-    - proto
-genesis:
-  env: proto
+genesis: {}
 EOF
-	my $env = $top->load_env('proto')->use_cloud_config($top->path('.cloud.yml'));
-	ok $env->needs_bosh_create_env, "'proto' test env needs create-env";
-
+	my $env = $top->load_env('proto')->use_config($top->path('.cloud.yml'));
+	ok $env->use_create_env, "'proto' test env needs create-env";
 	cmp_deeply(scalar load_yaml($env->manifest(prune => 0)), {
 		name   => ignore,
 		fancy  => ignore,
@@ -556,15 +547,14 @@ kit:
   version: latest
   features:
     - echo    # for pruning tests
-genesis:
-  env: standalone
+genesis: {}
 EOF
 	put_file $top->path(".cloud.yml"), <<EOF;
 --- {}
 # not really a cloud config, but close enough
 EOF
 
-	my $env = $top->load_env('standalone')->use_cloud_config($top->path('.cloud.yml'));
+	my $env = $top->load_env('standalone')->use_config($top->path('.cloud.yml'));
 	cmp_deeply($env->exodus, {
 			version       => ignore,
 			dated         => re(qr/\d\d\d\d-\d\d-\d\d \d\d:\d\d:\d\d/),
@@ -645,56 +635,6 @@ EOF
 	teardown_vault();
 };
 
-subtest 'bosh targeting' => sub {
-	local $ENV{GENESIS_BOSH_COMMAND};
-	my ($director1,$director2) = fake_bosh_directors(
-		{alias => 'standalone'},
-		{alias => 'override-me', port => 26666},
-	);
-	fake_bosh;
-
-	my $vault_target = vault_ok;
-	Genesis::Vault->clear_all();
-	my $top = Genesis::Top->create(workdir, 'thing', vault=>$VAULT_URL)->link_dev_kit('t/src/fancy');
-	put_file $top->path('standalone.yml'), <<EOF;
----
-kit:
-  name:    dev
-  version: latest
-genesis:
-  env:       standalone
-EOF
-
-	my $env = $top->load_env('standalone');
-	is $env->bosh_target, "standalone", "without a params.bosh, params.env is the BOSH target";
-
-	put_file $top->path('standalone.yml'), <<EOF;
----
-kit:
-  name:    dev
-  version: latest
-genesis:
-  env: standalone
-
-params:
-  bosh: override-me
-EOF
-
-	$env = $top->load_env('standalone');
-	is $env->bosh_target, "override-me", "with a params.bosh, it becomes the BOSH target";
-
-	{
-		$env = $top->load_env('standalone');
-		local $ENV{GENESIS_BOSH_ENVIRONMENT} = "https://127.0.0.1:26666";
-		$env = $top->load_env('standalone'); # reload otherwise its cached by the previous call
-		is $env->bosh_target, "https://127.0.0.1:26666", "the \$GENESIS_BOSH_ENVIRONMENT overrides all";
-	}
-
-	$director1->stop();
-	$director2->stop();
-	teardown_vault();
-};
-
 subtest 'cloud_config_and_deployment' => sub{
 	local $ENV{GENESIS_BOSH_COMMAND};
 	my ($director1) = fake_bosh_directors(
@@ -711,20 +651,19 @@ subtest 'cloud_config_and_deployment' => sub{
 kit:
   name:    dev
   version: latest
-genesis:
-  env: standalone
 EOF
 
+	Genesis::BOSH->set_command($ENV{GENESIS_BOSH_COMMAND});
 	my $env = $top->load_env('standalone');
-	lives_ok { $env->download_cloud_config(); }
+	lives_ok { $env->download_configs('cloud'); }
 		"download_cloud_config runs correctly";
 
-	ok -f $env->cloud_config, "download_cloud_config created cc file";
-	eq_or_diff get_file($env->cloud_config), <<EOF, "download_cloud_config calls BOSH correctly";
-{"cmd": "bosh -e standalone config --type cloud --name default --json"}
+	ok -f $env->config_file('cloud'), "download_cloud_config created cc file";
+	eq_or_diff get_file($env->config_file('cloud')), <<EOF, "download_config calls BOSH correctly";
+{"cmd": "bosh config --type cloud --name default --json"}
 EOF
 
-	put_file $env->cloud_config, <<EOF;
+	put_file $env->config_file('cloud'), <<EOF;
 ---
 something: (( vault "secret/code:word" ))
 EOF
@@ -737,10 +676,6 @@ EOF
 	ok ! defined($sha1), "sha1 sum for manifest not computed.";
 	stdout_is(sub {$env->deploy()}, <<EOF,
 bosh
--e
-standalone
--d
-standalone-thing
 deploy
 --no-redact
 $env->{__tmp}/manifest.yml
@@ -772,6 +707,7 @@ EOF
 				kit_is_dev => 1,
 				features => '',
 				bosh => "standalone",
+				is_bosh => 0,
 				vault_base => "/secret/standalone/thing",
 				version => '(development)',
 				manifest_sha1 => $sha1,
@@ -784,11 +720,12 @@ EOF
 
 	is($env->last_deployed_lookup("something","goose"), "REDACTED", "Cached manifest contains redacted vault details");
 	is($env->last_deployed_lookup("fancy.status","none"), "online", "Cached manifest contains non-redacted params");
-	is($env->last_deployed_lookup("params.env","none"), "standalone", "Cached manifest contains pruned params");
+	is($env->last_deployed_lookup("genesis.env","none"), "standalone", "Cached manifest contains pruned params");
 	cmp_deeply(scalar($env->exodus_lookup("",{})), {
 				dated => $exodus->{dated},
 				deployer => $ENV{USER},
 				bosh => "standalone",
+				is_bosh => 0,
 				kit_name => "fancy",
 				kit_version => "0.0.0-rc0",
 				kit_is_dev => 1,
@@ -822,6 +759,7 @@ subtest 'bosh variables' => sub {
 	);
 	my $vault_target = vault_ok;
 	Genesis::Vault->clear_all();
+	Genesis::BOSH->set_command($ENV{GENESIS_BOSH_COMMAND});
 	my $top = Genesis::Top->create(workdir, 'thing', vault=>$VAULT_URL)->link_dev_kit('t/src/fancy');
 	put_file $top->path("standalone.yml"), <<EOF;
 ---
@@ -829,9 +767,6 @@ kit:
   name:    dev
   version: latest
   features: []
-
-genesis:
-  env: standalone
 
 bosh-variables:
   something:       valueable
@@ -847,10 +782,10 @@ params:
 
 EOF
 	my $env = $top->load_env('standalone');
-	lives_ok { $env->download_cloud_config(); }
+	lives_ok { $env->download_configs('cloud'); }
 		"download_cloud_config runs correctly";
 
-	put_file $env->cloud_config, <<EOF;
+	put_file $env->config_file('cloud'), <<EOF;
 ---
 cc-stuff: cloud-config-data
 EOF
@@ -858,10 +793,6 @@ EOF
 	my $varsfile = $env->vars_file();
 	stdout_is(sub {$env->deploy()}, <<EOF, "Deploy should call BOSH with the correct options, including vars file");
 bosh
--e
-standalone
--d
-standalone-thing
 deploy
 --no-redact
 -l
@@ -890,6 +821,7 @@ subtest 'new env and check' => sub{
 	Genesis::Vault->clear_all();
 
 	my $name = "far-fetched";
+	write_bosh_config $name;
 	my $top = Genesis::Top->create(workdir, 'sample', vault=>$VAULT_URL);
 	my $kit = $top->link_dev_kit('t/src/creator')->local_kit_version('dev');
 	mkfile_or_fail $top->path("pre-existing.yml"), "I'm already here";
@@ -906,6 +838,7 @@ subtest 'new env and check' => sub{
 		{alias => $name},
 	);
 	fake_bosh;
+	Genesis::BOSH->set_command($ENV{GENESIS_BOSH_COMMAND});
 	my $out;
 	lives_ok {
 		$out = combined_from {$env = $top->create_env($name, $kit, vault => $vault_target)}
@@ -938,9 +871,6 @@ kit:
   features:
     - (( replace ))
     - bonus
-
-genesis:
-  env:                far-fetched
 
 params:
   static: junk

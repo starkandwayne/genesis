@@ -30,6 +30,8 @@ use Genesis::Top;
 use Genesis::Kit;
 use Genesis::Kit::Compiler;
 use Genesis::Kit::Provider;
+use Genesis::BOSH;
+use Genesis::BOSH::Director;
 use Genesis::CI::Legacy; # but we'd rather not...
 
 $Genesis::VERSION = "(development)";
@@ -340,31 +342,6 @@ EOF
 	}
 }
 
-sub check_bosh_version {
-	my ($min) = @_;
-	my $best = "0.0.0";
-	foreach my $boshcmd (qw(bosh2 boshv2 bosh)) {
-		my ($version, undef) = run("$boshcmd -v 2>&1 | grep version | head -n1");
-		if ($version =~ /version (\S+?)-.*/) {
-			if (new_enough($1, $min)) {
-				# Try to get the full path if possible
-				$ENV{GENESIS_BOSH_COMMAND} = `/usr/bin/env bash -c 'command -v $boshcmd 2>/dev/null' 2>/dev/null`;
-				$ENV{GENESIS_BOSH_COMMAND} = `which $boshcmd 2>/dev/null` if $? != 0;
-				$ENV{GENESIS_BOSH_COMMAND} = "\\$boshcmd" if $? != 0;
-				chomp $ENV{GENESIS_BOSH_COMMAND};
-				debug("#G{Version $1} of #C{$ENV{GENESIS_BOSH_COMMAND}} meets or exceeds minimum of #W{$min}");
-				return ();
-			}
-			$best = $1 if new_enough($1, $best); # Track the best we've found for error message
-		}
-	}
-	if ($best eq "0.0.0") {
-		return "#R{Missing `bosh2`} - install the BOSH (v2) CLI from #B{https://github.com/cloudfoundry/bosh-cli/releases}";
-	} else {
-		return "BOSH (v2) CLI v${best} is installed, but Genesis requires #R{at least $min} - upgrade your BOSH CLI, via #B{https://github.com/cloudfoundry/bosh-cli/releases}";
-	}
-}
-
 sub check_version {
 	my ($name, $min, $cmd, $regex, $url) = @_;
 	$url ||= "your platform package manager";
@@ -409,7 +386,8 @@ sub check_prereqs {
 	my @errors = grep {$_} map {check_version(@$_)} @$reqs;
 
 	# check that we has a bosh (v2)
-	push @errors, check_bosh_version($bosh_min_version);
+	eval {Genesis::BOSH->command($bosh_min_version)};
+	push @errors, $@ if $@;;
 
 	if (command_scope(\%conditions, ['repo','env'])) {
 		push @errors, csprintf(
@@ -451,7 +429,7 @@ sub check_environment {
 
 	my $ok = 1;
 	my $checks = "environmental parameters";
-	$checks = "BOSH configs and $checks" if scalar($env->configs);
+	$checks = "BOSH configs and $checks" if $env->required_configs('check');
 	if ($env->has_hook('check')) {
 		explain "\n[#M{%s}] running $checks checks...", $env->name;
 		$env->run_hook('check') or $ok = 0;
@@ -466,20 +444,18 @@ sub check_environment {
 	}
 
 	if ($ok) {
-		if ($env->needs_bosh_create_env || $env->cloud_config) {
-			if (!exists($opts{check_manifest}) || $opts{check_manifest}) {
-				explain "[#M{%s}] running manifest viability checks...", $env->name;
-				$env->manifest or $ok = 0;
-			}
-		} else {
-			explain "[#M{%s}] #Y{No cloud config provided - can't check manifest viability}", $env->name;
+		if ($env->missing_required_configs('manifest')) {
+			explain "[#M{%s}] #Y{Required BOSH configs not provided - can't check manifest viability}", $env->name;
+		} elsif (!exists($opts{check_manifest}) || $opts{check_manifest}) {
+			explain "[#M{%s}] running manifest viability checks...", $env->name;
+			$env->manifest or $ok = 0;
 		}
 	}
 
-	if ($ok && (!exists($opts{check_stemcells}) || $opts{check_stemcells}) && !$env->needs_bosh_create_env) {
+	if ($ok && (!exists($opts{check_stemcells}) || $opts{check_stemcells}) && !$env->use_create_env) {
 
 		explain "[#M{%s}] running stemcell checks...", $env->name;
-		my @stemcells = Genesis::BOSH->stemcells($env->bosh_target);
+		my @stemcells =$env->bosh->stemcells;
 		my $required = $env->manifest_lookup('stemcells');
 		for my $stemcell_info (@$required) {
 			my ($alias, $os, $version) = @$stemcell_info{qw/alias os version/};
@@ -504,6 +480,8 @@ sub check_environment {
 			$ok = 0 unless $found;
 		}
 		if (!$ok) {
+			# TODO (BETTER): $env->bosh->upload_stemcells($stemcell1, $stemcell2, ...)
+			#
 			#TODO: if exodus data for bosh deployment indicates a version of the kit where
 			#      https://github.com/genesis-community/bosh-genesis-kit/issues/70 is resolved,
 			#      spit out the commands that allow the user to upload the specific missing verions:
@@ -571,11 +549,15 @@ our $GLOBAL_USAGE = <<EOF;
   -e, --bosh-env    Which BOSH environment (aka director) to use.  If not
                     specified, it will use the value in genesis.bosh or
                     genesis.env in that order.  Can also be provided using
-                    either \$GENESIS_BOSH_ENVIRONMENT or \$BOSH_ENVIRONMENT env
-                    variables.
+                    either \$GENESIS_BOSH_ENVIRONMENT env variables.
 
-                    For legacy reasons, --environment is also supported for
-                    this option, but is deprecated.
+                    As of v2.8.0, the BOSH director information is read from
+                    Exodus data instead of the local .bosh/config, and as such,
+                    expect the deployment type of the bosh director to be
+                    'bosh'.  If this is not the case, you can specify the
+                    deployment type after the deployment name, separated by a
+                    '/' (ie c-aws-myenv/new-bosh).  This will inform the system
+                    where to find the Exodus data.
 
   -c, --config <s>  Specify a YAML file to be used as a config instead of
                     fetching it from the BOSH director.  This option can be
@@ -614,7 +596,7 @@ sub options {
 			trace|T+
 			quiet|q
 			cwd|C=s
-			environment|bosh-env|e=s
+			bosh-env|e=s
 			color!
 			config|c=s@
 			cloud-config|cc=s
@@ -639,9 +621,9 @@ sub options {
 	$ENV{DEBUG}          = 'y' if $trace > 1;
 	$ENV{TRACE}          = 'y' if $trace > 2;
 
-	debug("bosh env: ".($options->{environment} || "(defined in environment file)"));
-	$ENV{GENESIS_BOSH_ENVIRONMENT} = delete($options->{environment})
-		if $options->{environment};
+	debug("bosh env: ".($options->{'bosh-env'} || "(defined in environment file)"));
+	$ENV{GENESIS_BOSH_ENVIRONMENT} = delete($options->{'bosh-env'})
+		if $options->{'bosh-env'};
 
 	if ($options->{cwd}) {
 		my $requested_cwd = delete($options->{cwd});
@@ -799,6 +781,7 @@ $GLOBAL_USAGE
   #G{remove-secrets}    Remove credentials (passwords, keys, etc.).
   #G{manifest}          Generate a redacted BOSH deployment manifest for an environment.
   #G{deploy}            Generate a real manifest using Vault + Cloud Config, and deploy it to BOSH.
+  #G{bosh}              Run a BOSH cli for the specific environment.
   #G{do}                Run an addon script provided by the Kit.  Try `do list`
 
 #U{INFORMATIVE COMMANDS:}
@@ -1405,17 +1388,24 @@ command("deploy", {scope => 'env'}, <<EOF,
 genesis v$Genesis::VERSION$Genesis::BUILD
 USAGE: genesis deploy <options> env-name[.yml]
 
+
 OPTIONS
 $GLOBAL_USAGE
+
+Unless specified, the following options don't apply when deploying a create-
+env environment.
+
   -y, --yes              Do not ask any questions, assume 'y' for any that would
                          normally be asked.  Allows automation to deploy without
                          requiring human intervention or expect-style scripting.
+                         (Also valid for create-env environments)
 
       --[no-]redact      Determines if values are shown on the diff output.  By
                          default, the manifest will be redacted unless being
                          output to the live console.
       --skip-drain xxx   Skip running drain scripts for specific instance group.
-                         Can be specified multiple times.
+                         Can be specified multiple times. No instance group
+                         needs to be specified for create-env environments.
 
       --canaries #       Override the default number of canary VMs per instance
                          group.
@@ -1431,7 +1421,7 @@ Can specify one of the follow three:
 
       --recreate         Recreate all VMs instead of just applying changes to them.
                          This requires the VMs to be responsive; use --fix if they
-                         are not.
+                         are not. (Also valid for create-env environments)
 
       --fix              Recreate unresponsive VMs instead of raising an error.
 
@@ -1468,16 +1458,14 @@ sub {
 	}
 
 	explain "Preparing to deploy #C{%s}:\n  - based on kit #c{%s}", $env->name, $env->kit->id;
-	if ($env->needs_bosh_create_env) {
+	if ($env->use_create_env) {
 		explain "  - as a #M{create-env} deployment\n";
 	} else {
-		explain "  - to '#M{%s}' BOSH director.\n", scalar($env->lookup_bosh_target);
-		my @hooks = qw(blueprint manifest check);
-		push @hooks, grep {$env->kit->has_hook($_)} qw(pre-deploy post-deploy);
-		$env->download_required_configs(@hooks);
-		explain "#Y{! No cloud config detected -- this may be a Genesis bug}"
-			unless $env->cloud_config;
+		explain "  - to M{%s} BOSH director at #c{%s}.\n", $env->bosh->{alias}, $env->bosh->{url};
 	}
+	$env
+		->with_bosh
+		->download_required_configs('deploy');
 
 	check_environment($env)
 		or bail "#R{Preflight checks failed}; deployment operation #R{halted}.";
@@ -1485,6 +1473,67 @@ sub {
 	explain "Preflight #G{ok}, initiating BOSH deploy...";
 	my $ok = $env->deploy(%options);
 	exit ($ok ? 0 : 1);
+});
+# }}}
+# bosh - run a bosh command against the BOSH director for the specified environment
+
+command("bosh", {scope => 'env'}, <<EOF,
+genesis v$Genesis::VERSION$Genesis::BUILD
+USAGE: genesis bosh [<options>] env-name[.yml] -- <bosh command and options>
+
+Runs the specified bosh command and options, without the need to specify the director or deployment name.
+
+OPTIONS
+$GLOBAL_USAGE
+  -d, --director         The specified environment is the desired BOSH director
+                         to target, and there is no associated deployment.
+                         Without this option, it will target the BOSH director
+                         used to deploy this environment, with the environment
+                         being the associated deployment.
+      --envs             Return an eval-able export of BOSH environment variables
+                         that will enable the bosh cli to target the desired
+                         deployment and associated BOSH director.
+
+EOF
+sub {
+	my %options = (redact => ! -t STDOUT);
+	options(\@_, \%options, qw/
+		director|d
+		envs
+	/);
+	usage unless @_;
+	my $env = Genesis::Top->new('.')->load_env(shift)->with_vault();
+
+	my $bosh;
+	if ($options{director}) {
+		my $exodus_data = eval {$env->vault->get($env->exodus_base)};
+		if ($exodus_data->{url} && $exodus_data->{admin_password}) {
+			$bosh = Genesis::BOSH::Director->from_exodus($env->name, exodus_data => $exodus_data);
+		} else {
+			$bosh = Genesis::BOSH::Director->from_alias($env->name);
+		}
+	} else {
+		bail("#R{[ERROR]} Environment %s is a 'create-env' environment, so it does\n".
+				 "			not have an associated BOSH Director.  Please use the #y{--director} option\n".
+				 "			if you are trying to target this environment for the BOSH director",
+				 $env->name
+		) if ($env->use_create_env);
+		$bosh = $env->bosh;
+	}
+	if ($options{envs}) {
+		my %bosh_envs = $bosh->environment_variables
+			unless in_controlling_terminal;
+		for (keys %bosh_envs) {
+			(my $escaped_value = $bosh_envs{$_}||"") =~ s/"/"\\""/g;
+			#$escaped_value =~ s/\n/\\/g;
+			explain 'export %s="%s"', $_, $escaped_value;
+		}
+		explain STDERR "Exported environmental variables for BOSH director %s", $bosh->{alias};
+		exit 0;
+	} else {
+		my (undef, $rc) = $bosh->execute({interactive => 1}, @_);
+		exit $rc;
+	}
 });
 # }}}
 # genesis do - run a kit addon {{{
@@ -2124,7 +2173,7 @@ sub {
 		->load_env($_[0])
 		->with_vault();
 
-	if ($env->needs_bosh_create_env && scalar($env->configs)) {
+	if ($env->use_create_env && scalar($env->configs)) {
 		error(
 			"#Y{[WARNING]} The provided configs will be ignored, as create-env environments do\n".
 			"          not use them:\n".
@@ -2494,7 +2543,7 @@ sub {
 	my $env = Genesis::Top->new('.')->load_env($ENV{CURRENT_ENV})->with_vault();
 	push(@undefined, grep { !$ENV{$_} }
 		qw/BOSH_ENVIRONMENT BOSH_CA_CERT
-		   BOSH_CLIENT BOSH_CLIENT_SECRET/) unless $env->needs_bosh_create_env;
+		   BOSH_CLIENT BOSH_CLIENT_SECRET/) unless $env->use_create_env;
 	__bail_on_missing_pipeline_environment_variables(@undefined);
 
 	if ($ENV{PREVIOUS_ENV}) {
@@ -2514,7 +2563,9 @@ sub {
 
 	my $result;
 	eval {
-		$result = $env->deploy(redact => !envset('CI_NO_REDACT'));
+		$result = $env->with_bosh
+		              ->download_required_configs('deploy')
+		              ->deploy(redact => !envset('CI_NO_REDACT'));
 	};
 
 	if ($@ || !$result) {
@@ -2629,8 +2680,7 @@ sub {
 	__bail_on_missing_pipeline_environment_variables(@undefined);
 
 	my $env = Genesis::Top->new('.')->load_env($ENV{CURRENT_ENV})->with_vault()->with_bosh();
-	Genesis::BOSH->alias(scalar $env->lookup_bosh_target);
-	Genesis::BOSH->run_errand($env->bosh_target, $env->deployment, $ENV{ERRAND_NAME});
+	$env->bosh->run_errand($ENV{ERRAND_NAME});
 	exit 0;
 });
 # }}}
@@ -2789,7 +2839,7 @@ sub {
 });
 # }}}
 
-###########################################################################
+############################/###############################################
 
 sub main {
 	if (in_callback) {

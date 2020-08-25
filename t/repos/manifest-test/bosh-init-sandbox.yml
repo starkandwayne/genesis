@@ -1,7 +1,8 @@
 kit:
-  subkits:
-  - bosh-init
-genesis:
-  env: bosh-init-sandbox
+  name: dev
+  version: latest
+  features:
+  - bosh-init # old style
+
 params:
   domain: bosh-init.example.com

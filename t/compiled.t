@@ -7,6 +7,7 @@ use helper;
 use Test::Differences;
 
 my $vault_target = vault_ok;
+write_bosh_config qw/test-env test-env-upgrade new-env/;
 
 my $tmp = workdir;
 ok -d "t/repos/compiled-kit-test", "compiled-kit-test repo exists" or die;
@@ -38,8 +39,7 @@ kit:
   features:
     - (( replace ))
 
-genesis:
-  env: new-env
+genesis: {}
 
 params: {}
 EOF

@@ -2,6 +2,3 @@
 kit:
   # ugprade!
   version: 0.0.2
-
-genesis:
-  env: test-env-upgrade

@@ -205,13 +205,28 @@ EOF
 }
 
 sub bosh_runs_as {
-	my ($expect, $output) = @_;
+	my ($expect, $output,%vars) = @_;
 	$output = $output ? join("\n", map {"echo '$_'"} split("\n", $output)) : "";
+	my $var_checks = '';
+	for $var (keys %vars) {
+		my $val = $vars{$var};
+		$var_checks .= (<<EOF);
+if [[ "\$$var" != "$val" ]] ; then
+	varfail=1
+	echo >&2 "$var: want '$val, got '\$$var'"
+fi
+EOF
+	}
 	fake_bosh(<<EOF);
 $output
-[[ "\$@" == "$expect" ]] && exit 0;
-echo >&2 "got  '\$@\'"
-echo >&2 "want '$expect'"
+varfail=0
+$var_checks
+[[ "\$@" == "$expect" && \$varfail == 0 ]] && exit 0;
+if [[  "\$@" == "$expect" ]] ; then
+  echo >&2 "Output:"
+  echo >&2 "got  '\$@\'"
+  echo >&2 "want '$expect'"
+fi
 exit 2
 EOF
 }
@@ -257,7 +272,7 @@ sub bosh_outputs_json {
 }
 EOF
 	$output=<<EOF;
-	args="\$(echo "\$*" | sed -e 's/"/"\\""/g')"
+	args="\$(echo "\$*" | sed -e 's/"/"\\""/g' | set -e 's#/#\/#g')"
 EOF
 	$output.="(\n";
 	$output.= join("\n", map {(my $l = $_) =~ s/'/'\\''/g; "echo '$l'"} split("\n", $json));
