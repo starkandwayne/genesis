@@ -83,9 +83,9 @@ sub run_hook {
 
 	die "Unrecognized hook '$hook'\n" unless grep {
 		$_ eq $hook
-	} qw/new blueprint secrets info addon check pre-deploy post-deploy prereqs features kit/;
+	} qw/new blueprint secrets info addon check pre-deploy post-deploy features kit/;
 
-	if (grep { $_ eq $hook } qw/new secrets info addon check prereqs blueprint pre-deploy post-deploy features/) {
+	if (grep { $_ eq $hook } qw/new secrets info addon check blueprint pre-deploy post-deploy features/) {
 		bug("The 'env' option to run_hook is required for the '$hook' hook!!") unless $opts{env};
 		my %env_vars = $opts{env}->get_environment_variables($hook);
 		$ENV{$_} = $env_vars{$_} for (keys %env_vars);

@@ -12,6 +12,7 @@ my ($bosh_cmd);
 # command - get, and optionally check version, of local BOSH command {{{
 sub command {
 	my ($class, $min_version, $max_version) = @_;
+	return $ENV{GENESIS_BOSH_COMMAND} if $ENV{GENESIS_BOSH_COMMAND};
 	return $bosh_cmd if ($bosh_cmd && !$min_version && !$max_version);
 
 	$min_version ||= '0.0.0';

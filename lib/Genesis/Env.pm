@@ -89,7 +89,7 @@ sub load {
 		my $kit_version = $env->lookup('kit.version') or push(@errors, "Missing #ci{kit.version}");
 		if ($kit_name && $kit_version) {
 			$env->{kit} = $env->{top}->local_kit_version($kit_name, $kit_version) or push(@errors, sprintf(
-				"Unable to locate v%s$kit_version of #M{%s$kit_name}` kit for #C{%s} environment.",
+				"Unable to locate v%s of #M{%s}` kit for #C{%s} environment.",
 				$kit_version, $kit_name, $env->name
 			));
 		}
@@ -566,7 +566,7 @@ sub get_environment_variables {
 	$env{GENESIS_SECRETS_SLUG_OVERRIDE} = $self->secrets_slug ne $self->default_secrets_slug ? "true" : "";
 	$env{GENESIS_ROOT_CA_PATH} = $self->root_ca_path;
 
-	unless (grep { $_ eq ($hook||'') } qw/new prereqs subkit features/) {
+	unless (grep { $_ eq ($hook||'') } qw/new features/) {
 		$env{GENESIS_REQUESTED_FEATURES} = join(' ', $self->features);
 	}
 
@@ -576,7 +576,7 @@ sub get_environment_variables {
 
 	# BOSH support
 	$env{BOSH_ALIAS} = $self->bosh_env;
-	if ($hook !~ /^(new)$/ || $self->missing_required_configs($hook)) {
+	if ($self->{__bosh} || grep {$_ eq 'bosh'} ($self->kit->required_connectivity($hook))) {
 		my %bosh_env = $self->bosh->environment_variables;
 		$env{$_} = $bosh_env{$_} for keys %bosh_env;
 	}
@@ -609,7 +609,7 @@ sub credhub_connection_env {
 
 	if ($credhub_src) {
 		my $credhub_info = $self->exodus_lookup('.',undef,$credhub_src);
-		if ($credhub_info) {
+		if ($credhub_info && $credhub_info->{credhub_url}) {
 			$env{CREDHUB_SERVER} = $credhub_info->{credhub_url};
 			$env{CREDHUB_CLIENT} = $credhub_info->{credhub_username};
 			$env{CREDHUB_SECRET} = $credhub_info->{credhub_password};
@@ -762,6 +762,7 @@ sub bosh {
 		my $self = shift;
 		return Genesis::BOSH::CreateEnvProxy->new($self) if $self->use_create_env;
 		my ($bosh_alias,$bosh_dep_type) = split('/', $self->bosh_env);
+		debug "HERE";
 		my $bosh = Genesis::BOSH::Director->from_exodus(
 			$bosh_alias,
 			vault => $self->vault,
@@ -1550,7 +1551,7 @@ genesis:
   exodus_path:   ${\($self->exodus_slug)}
   exodus_mount:  ${\($self->exodus_mount)}
   ci_mount:      ${\($self->ci_mount)}
-  bosh_env:      ${\($self->bosh->{alias} || '""')}
+  bosh_env:      ${\($self->bosh_env || '""')}
 
 exodus:
   version:     $Genesis::VERSION

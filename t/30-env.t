@@ -872,6 +872,8 @@ kit:
     - (( replace ))
     - bonus
 
+genesis: {}
+
 params:
   static: junk
 EOF

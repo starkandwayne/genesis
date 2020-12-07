@@ -286,6 +286,7 @@ sub error {
 sub bail {
 	my @err = @_;
 	unshift @err, "%s" if $#err == 0;
+	dump_stack(1);
 	$! = 1; die csprintf(@err)."$/";
 }
 

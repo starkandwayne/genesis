@@ -308,7 +308,10 @@ sub parse_pipeline {
 			# allowed subkeys
 			for (keys %{$p->{pipeline}{task}}) {
 				push @errors, "Unrecognized `pipeline.task.$_' key found."
-					unless m/^(image|version)$/;
+					unless m/^(image|version|privileged)$/;
+			}
+			if (exists($p->{pipeline}{task}{privileged}) && ref($p->{pipeline}{task}{privileged}) ne "ARRAY") {
+				push @errors, "`pipeline.task.privileged` must be an array.";
 			}
 		} else {
 			push @errors, "`pipeline.task' must be a map.";
@@ -348,7 +351,7 @@ sub parse_pipeline {
 			my $E = eval { $top->load_env($env) };
 
 			# required sub-subkeys
-			if ($E && $E->needs_bosh_create_env) {
+			if ($E && $E->use_create_env) {
 				# allowed subkeys for a create-env deploy
 				for (keys %{$p->{pipeline}{boshes}{$env}}) {
 					push @errors, "Unrecognized `pipeline.boshes[$env].$_' key found."
@@ -445,6 +448,7 @@ sub parse {
 
 	$P->{pipeline}{task}{image}   ||= 'starkandwayne/concourse';
 	$P->{pipeline}{task}{version} ||= 'latest';
+	$P->{pipeline}{task}{privileged} ||= [];
 
 	# NOTE that source-level mucking about via regexen obliterates
 	# all of the line and column information we would expect from
@@ -891,7 +895,7 @@ EOF
 EOF
 			print $OUT "        - ${_}\n" for $E->potential_environment_files();
 		}
-		unless ($E->needs_bosh_create_env) {
+		unless ($E->use_create_env) {
 			print $OUT <<EOF;
 
   - name: ${alias}-cloud-config
@@ -934,7 +938,7 @@ EOF
 		}
 		if ($pipeline->{pipeline}{locker}{url}) {
 			my $deployment_suffix = $top->type;
-			unless ($E->needs_bosh_create_env) {
+			unless ($E->use_create_env) {
 				my $bosh_lock = $env;
 				if ($pipeline->{pipeline}{boshes}{$env}{url} && $pipeline->{pipeline}{boshes}{$env}{url} =~ m|https?://(.*)?:(.*)|) {
 					my $addr = gethostbyname($1);
@@ -1154,7 +1158,7 @@ EOF
     - in_parallel:
       - { get: $alias-changes, trigger: true }
 EOF
-			unless ($E->needs_bosh_create_env) {
+			unless ($E->use_create_env) {
 				print $OUT <<EOF;
       - get: $alias-cloud-config
         $tag_yaml
@@ -1187,7 +1191,7 @@ EOF
       ensure:
         do:
 EOF
-			unless ($E->needs_bosh_create_env) {
+			unless ($E->use_create_env) {
 				# <alias>-bosh-lock is used to prevent the parent bosh from upgrading while we deploy
 				# - not necessary for create-env
 				print $OUT <<EOF;
@@ -1212,7 +1216,7 @@ EOF
       do:
 EOF
 		if ($pipeline->{pipeline}{locker}{url}) {
-			unless ($E->needs_bosh_create_env) {
+			unless ($E->use_create_env) {
 				# <alias>-bosh-lock is used to prevent the parent bosh from upgrading while we deploy
 				# - not necessary for create-env
 				print $OUT <<EOF;
@@ -1238,7 +1242,7 @@ EOF
 EOF
 		# only add cloud/runtime config on true-triggers, otherwise it goes in notifications
 		# also make sure that we are not deploying with create-env (no cloud/runtime config for that scenario)
-		if (! $E->needs_bosh_create_env && $trigger eq "true") {
+		if (! $E->use_create_env && $trigger eq "true") {
 			print $OUT <<EOF;
         - get: $alias-cloud-config
           $tag_yaml
@@ -1285,7 +1289,7 @@ EOF
 			if $pipeline->{pipeline}{vault}{namespace};
 
 		# don't supply bosh creds if we're create-env, because no one to talk to
-		unless ($E->needs_bosh_create_env) {
+		unless ($E->use_create_env) {
 			print $OUT <<EOF;
             BOSH_ENVIRONMENT:     $pipeline->{pipeline}{boshes}{$env}{url}
             BOSH_CA_CERT: |
@@ -1330,9 +1334,15 @@ EOF
           params:
             repository: out/git
 EOF
+		my $privileged = (grep {$_ eq "$alias-$deployment_suffix"} $pipeline->{pipeline}{task}{privileged});
+		if ($privileged) {
+			print $OUT <<EOF;
+        privileged: true
+EOF
+		}
 
 		# CONCOURSE: run optional errands as tasks - non-create-env only (otherwise no bosh to run the errand) {{{
-		unless ($E->needs_bosh_create_env) {
+		unless ($E->use_create_env) {
 			for my $errand_name (@{$pipeline->{pipeline}{errands}}) {
 				print $OUT <<EOF;
         # run errands against the deployment

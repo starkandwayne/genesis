@@ -1,0 +1,9 @@
+---
+name: pipeline-test
+version: 0.0.1
+description: Test kit for Pipeline scenarios
+author: dbell@starkandwayne.com
+
+credentials: {}
+certificates: {}
+

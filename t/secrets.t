@@ -26,7 +26,11 @@ subtest 'secrets-v2.7.0' => sub {
 
 	my $vault_target = vault_ok;
 	bosh2_cli_ok;
-
+	fake_bosh <<EOF;
+#/bin/bash
+echo "test_user"
+EOF
+	my @directors = fake_bosh_directors('c-azure-us1-dev', 'c-azure-us1-prod');
 	chdir workdir('genesis-2.7.0') or die;
 	reprovision init => 'something', kit => 'secrets-2.7.0';
 
@@ -35,6 +39,7 @@ subtest 'secrets-v2.7.0' => sub {
 	my $secrets_mount = 'secret/genesis-2.7.0/deployments';
 	my $secrets_path = 'dev/azure/us1';
 	local $ENV{SAFE_TARGET} = $vault_target;
+	runs_ok("safe cp -rf 'secret/exodus' 'secret/genesis-2.7.0/deployments/exodus'", "Can setup exodus data under secrets mount");
 	runs_ok("safe x509 issue -A --name 'root_ca.genesisproject.io' $root_ca_path", "Can create a base root ca");
 
 	my $cmd = Expect->new();
@@ -1295,6 +1300,7 @@ Validating 29 secrets for $env_name under path '$secrets_mount$secrets_path/':
 EOF
 
 	chdir $TOPDIR;
+	$_->stop() for (@directors);
 	teardown_vault;
 }	;
 
@@ -1306,17 +1312,19 @@ subtest 'secrets-base' => sub {
 
 	my $vault_target = vault_ok;
 	bosh2_cli_ok;
+	my @directors = fake_bosh_directors qw/us-east-sandbox west-us-sandbox north-us-sandbox/;
 	chdir workdir('redis-deployments') or die;
 
-	reprovision init => 'redis',
-				kit => 'omega';
+	reprovision
+		init => 'redis',
+		kit => 'omega-v2.7.0';
 
 	diag "\rConnecting to the local vault (this may take a while)...";
 	expects_ok "new-omega us-east-sandbox";
 	system('safe tree');
 
 	my $sec;
-	my $v = "secret/us/east/sandbox/omega";
+	my $v = "secret/us/east/sandbox/omega-v2.7.0";
 
 	my $rotated = [qw[
 	  test/random:username
@@ -1428,7 +1436,7 @@ subtest 'secrets-base' => sub {
 Parsing kit secrets descriptions ... done. - XXX seconds
 Retrieving all existing secrets ... done. - XXX seconds
 
-Checking 16 secrets for us-east-sandbox under path '/secret/us/east/sandbox/omega/':
+Checking 16 secrets for us-east-sandbox under path '/$v/':
   [ 1/16] auth/cf/uaa:fixed random password - 128 bytes, fixed ... found.
   [ 2/16] auth/cf/uaa:shared_secret random password - 128 bytes ... found.
   [ 3/16] test/fixed/random:username random password - 32 bytes, fixed ... found.
@@ -1626,6 +1634,7 @@ EOF
 	isnt $cert, $new_cert, "Certificates are rotated normally";
 
 	chdir $TOPDIR;
+	$_->stop() for (@directors);
 	teardown_vault;
 };
 
